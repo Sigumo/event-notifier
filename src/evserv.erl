@@ -1,4 +1,6 @@
 -module(evserv).
+%%TODO Change to -export when finished
+-compile(export_all).
 
 -record(state, {
     events,
@@ -16,17 +18,51 @@
 
 loop(S = #state{}) ->
     receive
+        %%New client subscribes to events
         {Pid, MsgRef, {subscribe, Client}} ->
             Ref = erlang:monitor(process,Client),
             NewClients = orddict:store(Ref, Client, S#state.clients),
             Pid ! {MsgRef, ok},
             loop(S#state{clients=NewClients});
+        %%Some client adds event
         {Pid, MsgRef, {add, Name, Description, TimeOut}} ->
-            ok;
+            case valid_datetime(TimeOut) of
+                true -> 
+                    EventPid = event:start_link(Name, TimeOut),
+                    NewEvents = orddict:store(Name, #event{name=Name, 
+                                                           description=Description,
+                                                           pid = EventPid,
+                                                           timeout=TimeOut},
+                                                           S#state.events),
+                    Pid ! {MsgRef, ok},
+                    loop(S#state{events=NewEvents});
+                false ->
+                    Pid ! {MsgRef, {error, bad_timeout}},
+                    loop(S)
+            end;
+        %%Some client cancels the event
         {Pid, MsgRef, {cancel, Name}} -> 
-            ok;
+            Events = case orddict:find(Name, S#state.events) of
+                        {ok, E} ->
+                            event:cancel(E#event.pid),
+                            orddict:erase(Name, S#state.events);
+                        error -> 
+                            S#state.events
+                     end,
+            Pid ! {MsgRef, ok},
+            loop(S#state{events = Events});
+
         {done, Name} ->
-            ok;
+            case orddict:find(Name, S#state.events) of
+                {ok, E} -> 
+                    send_to_clients({done, E#event.name, E#event.description}, S#state.clients),
+                    NewEvents = orddict:erase(Name, S#state.events),
+                    loop(S#state{events = NewEvents});
+                error ->
+                    %% This may happen if we cancel an event and
+                    %% it fires at the same time.
+                    loop(S)
+            end;
         shutdown ->
             ok;
         {'DOWN', Ref, process, _Pid, _Reason} ->
@@ -58,3 +94,6 @@ valid_time(H,M,S)
             M >= 0, M < 60,
             S >= 0, S < 60 -> true;
             valid_time(_,_,_) -> false.
+
+send_to_clients(Msg, ClientsDict) -> 
+    orddict:map(fun(_Ref, Pid) -> Pid ! Msg end, ClientsDict).
