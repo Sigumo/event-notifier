@@ -14,8 +14,6 @@
     timeout={{1970,1,1}, {0,0,0}}
 }).
 
-
-
 loop(S = #state{}) ->
     receive
         %%New client subscribes to events
@@ -64,11 +62,11 @@ loop(S = #state{}) ->
                     loop(S)
             end;
         shutdown ->
-            ok;
+            exit(shutdown);
         {'DOWN', Ref, process, _Pid, _Reason} ->
-            ok;
+            loop(S#state{clients=orddict:erase(Ref, S#state.clients)});
         code_change ->
-            ok;
+            ?MODULE:loop(S);
         Unknown -> 
             io:format("Unknown message: ~p ~n", [Unknown]),
             loop(S)
@@ -97,3 +95,27 @@ valid_time(H,M,S)
 
 send_to_clients(Msg, ClientsDict) -> 
     orddict:map(fun(_Ref, Pid) -> Pid ! Msg end, ClientsDict).
+
+start() -> 
+    register(?MODULE, Pid=spawn(?MODULE, init, [])),
+    Pid.
+
+start_link() -> 
+    register(?MODULE, Pid=spawn_link(?MODULE, init, [])),
+    Pid.
+
+terminate() ->
+    ?MODULE ! shutdown.
+
+subscribe(Pid) ->
+    Ref = erlang:monitor(process, whereis(?MODULE)),
+    ?MODULE ! {self(), Ref, {subscribe, Pid}},
+    receive
+        {Ref, ok} ->
+            {ok, Ref};
+        {'DOWN', Ref, process, _Pid, Reason} ->
+            {error, Reason}
+    after 5000 ->
+        {error, timeout}
+    end.
+
